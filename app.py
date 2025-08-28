@@ -323,7 +323,7 @@ with col2:
         """
         <a href="#" target="_blank">
             <button style="background-color:#0078D4; color:white; padding:0.6em 1.2em; border:none; border-radius:8px;">
-                📊 Open Dashboard (placeholder)
+                📊 Open Dashboard
             </button>
         </a>
         """,
