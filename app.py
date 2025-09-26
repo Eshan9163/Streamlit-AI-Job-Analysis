@@ -269,7 +269,7 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
             tooling_nature = EXCLUDED.tooling_nature,
             job_category = EXCLUDED.job_category,
             Automation_Solution = Excluded.Automation_Solution,
-            AI_Automation_Complexity = Excluded.AI Automation Complexity,
+            AI_Automation_Complexity = Excluded.AI_Automation_Complexity,
             run_id = EXCLUDED.run_id,
             jd_hash = EXCLUDED.jd_hash;
     """)
