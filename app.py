@@ -4,8 +4,8 @@ import re
 import string
 import hashlib
 from datetime import datetime
-
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -178,6 +178,7 @@ def ensure_sql_schema(engine: sa.Engine):
             Automation_Solution TEXT,
             AI_Automation_Complexity TEXT,
             Upskilling_Suggestion TEXT,
+            Task_Category TEXT,
             run_id TEXT,
             jd_hash TEXT,
             task_norm TEXT,
@@ -210,6 +211,7 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
         "Automation Solution",
         "AI Automation Complexity",
         "Upskilling Suggestion",
+        "Task Category",
         "Run ID",
         "JD Hash",
         "task_norm"
@@ -238,6 +240,8 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
             col_map[c] = "AI Automation Complexity"
         elif "upskilling suggestion" in lower or ("upskilling" in lower and "suggestion" in lower):
             col_map[c] = "Upskilling Suggestion"
+        elif "task category" in lower: 
+            col_map[c] = "Task Category"
         elif "job title" in lower or lower == "title":
             col_map[c] = "Job Title"
         elif lower in ["run id", "run_id", "runid"]:
@@ -262,9 +266,9 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
     insert_stmt = text("""
         INSERT INTO all_jobs
         (job_title, task, time_allocation, ai_impact_score, impact_explanation,
-         task_transformation, tooling_nature, job_category, Automation_Solution, AI_Automation_Complexity, Upskilling_Suggestion, run_id, jd_hash, task_norm)
+         task_transformation, tooling_nature, job_category, Automation_Solution, AI_Automation_Complexity, Upskilling_Suggestion, Task_Category, run_id, jd_hash, task_norm)
         VALUES (:job_title, :task, :time_allocation, :ai_impact_score, :impact_explanation,
-                :task_transformation, :tooling_nature, :job_category, :Automation_Solution, :AI_Automation_Complexity,:Upskilling_Suggestion, :run_id, :jd_hash, :task_norm)
+                :task_transformation, :tooling_nature, :job_category, :Automation_Solution, :AI_Automation_Complexity,:Upskilling_Suggestion, :Task_Category, :run_id, :jd_hash, :task_norm)
         ON CONFLICT (job_title, task_norm) DO UPDATE SET
             time_allocation = EXCLUDED.time_allocation,
             ai_impact_score = EXCLUDED.ai_impact_score,
@@ -275,6 +279,7 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
             Automation_Solution = Excluded.Automation_Solution,
             AI_Automation_Complexity = Excluded.AI_Automation_Complexity,
             Upskilling_Suggestion = Excluded.Upskilling_Suggestion,
+            Task_Category = Excluded.Task_Category,
             run_id = EXCLUDED.run_id,
             jd_hash = EXCLUDED.jd_hash;
     """)
@@ -292,6 +297,7 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
             "Automation_Solution": r.get("Automation Solution"),
             "AI_Automation_Complexity": r.get("AI Automation Complexity"),
             "Upskilling_Suggestion": r.get("Upskilling Suggestion"),
+            "Task_Category": r.get("Task Category"),
             "run_id": r.get("Run ID"),
             "jd_hash": r.get("JD Hash"),
             "task_norm": r.get("task_norm")
@@ -379,7 +385,7 @@ Input: You will receive either
 If only a job title is given, infer the typical tasks and responsibilities for that role at Club Med or in the hospitality industry, and continue as if a full description was provided.
 
 Output: Produce a table – one line per task – with the following six columns: 
-| Task | Job Category | Time allocation % | AI Impact Score (0–100) | Impact Explanation | Task Transformation % | Tooling nature % generic vs specific | Automation Solution | AI Automation Complexity | Upskilling Suggestion |
+| Task | Job Category | Time allocation % | AI Impact Score (0–100) | Impact Explanation | Task Transformation % | Tooling nature % generic vs specific | Automation Solution | AI Automation Complexity | Upskilling Suggestion | Task Category |
 
 Task – concise verb-phrase copied, paraphrased, or reasonably inferred from the job title or description. 
 Job Category - one of: IT, Marketing, HR, Finance, Operations, Legal, R&D, Customer Service, Other.
@@ -391,6 +397,7 @@ Tooling nature – split the AI tooling you foresee into generic (ChatGPT-like) 
 Automation Solution – briefly describe a realistic Gen-AI solution (e.g., "custom GPT-4 powered chatbot", "AI-assisted code generation tool", "AI-driven marketing content generator").
 AI Automation Complexity – rate the complexity of building and deploying the AI solution (1 = very simple, 5 = very complex).
 Upskilling Suggestion – Suggest one or two key skills the employee should develop to thrive in an AI-augmented version of this task. Write the Upskilling Suggestion only in French.
+Task Category – Knowledge Work / Physical Work / Hybrid Work (Knowledge work = computer-based, cognitive tasks like, planning, coordinating, communicating, deciding. Physical Work = tasks whose description clearly implies on-site/manual presence e.g. tasks with keywords like welcome guests, check-in, serving at bar/restaurant, cooking, cleaning, housekeeping, performing in shows, maintenance, driving, lifeguard, etc. Hybrid Work = a mix of both knowledge and physical work).
 
 Procedure
 A. If a detailed description is given: scan the description and list every distinct, non-trivial activity. 
@@ -491,7 +498,8 @@ if generate_clicked_sidebar or generate_clicked_main:
                         "Tooling nature % generic vs specific": [None],
                         "Automation Solution": [None],
                         "AI Automation Complexity": [None],
-                        "Upskilling Suggestion": [None]
+                        "Upskilling Suggestion": [None],
+                        "Task Category": [None]
                     })
 
             if "Job Title" not in parsed_df.columns:
@@ -522,6 +530,8 @@ if generate_clicked_sidebar or generate_clicked_main:
                     canonical_map[col] = "AI Automation Complexity"
                 elif "upskilling suggestion" in lc or ("upskilling" in lc and "suggestion" in lc):
                     canonical_map[col] = "Upskilling Suggestion"
+                elif "task category" in lc or ("category" in lc and "task" in lc):
+                    canonical_map[col] = "Task Category"
                 elif lc in ["job title", "title"]:
                     canonical_map[col] = "Job Title"
             if canonical_map:
@@ -537,7 +547,8 @@ if generate_clicked_sidebar or generate_clicked_main:
                 "Tooling nature % generic vs specific",
                 "Automation Solution",
                 "AI Automation Complexity",
-                "Upskilling Suggestion"
+                "Upskilling Suggestion",
+                "Task Category"
             ]:
                 if col not in parsed_df.columns:
                     parsed_df[col] = None
@@ -591,7 +602,7 @@ if st.session_state["new_reports"]:
     for role, df in st.session_state["new_reports"].items():
         st.markdown(f"#### {role}")
         try:
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df, width=True)
         except Exception:
             st.write(df.head(20))
         syn = st.session_state["new_synthesis"].get(role, "")
@@ -676,6 +687,7 @@ with col_a:
             "Automation Solution",
             "AI Automation Complexity",
             "Upskilling Suggestion",
+            "Task Category",
             "Run ID",
             "JD Hash"
         ]
@@ -760,31 +772,32 @@ with col_b:
             st.session_state["new_jd_text"].clear()
 
 # -------------------------
-# Dropdown Filter: View Data by Job Title
+# Dropdown Filter + Plotly Graph
 # -------------------------
 st.divider()
-st.subheader("📂 View Generated Data by Job Title")
+st.subheader("📊 View Generated Insights by Job Title")
 
 if engine is not None:
     try:
-        # Step 1: Fetch all unique job titles from database
+        # Step 1: Fetch unique job titles
         with engine.connect() as conn:
             df_titles = pd.read_sql("SELECT DISTINCT job_title FROM all_jobs ORDER BY job_title;", conn)
 
         if not df_titles.empty:
-            # Step 2: Dropdown to select job title
+            # Step 2: Dropdown for job title
             selected_title = st.selectbox(
-                "Select a Job Title to View Its Generated Data:",
+                "Select a Job Title to Visualize Its Data:",
                 df_titles['job_title'].tolist(),
                 index=None,
                 placeholder="Choose a job title..."
             )
 
-            # Step 3: When a title is selected, show related data
             if selected_title:
+                # Step 3: Query data for selected job title
                 with engine.connect() as conn:
                     query_data = text("""
-                        SELECT *
+                        SELECT job_title, task, ai_impact_score, job_category, 
+                               ai_automation_complexity, impact_explanation
                         FROM all_jobs
                         WHERE job_title = :title
                         ORDER BY task;
@@ -792,23 +805,56 @@ if engine is not None:
                     df_selected = pd.read_sql(query_data, conn, params={"title": selected_title})
 
                 if not df_selected.empty:
-                    st.success(f"Showing results for: **{selected_title}**")
-                    st.dataframe(df_selected, use_container_width=True)
+                    st.success(f"📈 Showing analytics for: **{selected_title}**")
 
-                    # Optional: Download CSV button
-                    csv = df_selected.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="📥 Download Data for This Job Title (CSV)",
-                        data=csv,
-                        file_name=f"{selected_title.replace(' ', '_')}_data.csv",
-                        mime="text/csv"
-                    )
+                    # Step 4: Plotly visualization options
+                    tab1, tab2, tab3 = st.tabs(["AI Impact by Task", "AI Automation Complexity", "Job Category Distribution"])
+
+                    # --- Chart 1: Bar Chart for AI Impact Score per Task ---
+                    with tab1:
+                        fig1 = px.bar(
+                            df_selected,
+                            x="task",
+                            y="ai_impact_score",
+                            title=f"AI Impact Score by Task for {selected_title}",
+                            text="ai_impact_score",
+                            color="ai_impact_score",
+                            color_continuous_scale="Blues"
+                        )
+                        fig1.update_layout(xaxis_tickangle=-45)
+                        st.plotly_chart(fig1, width=True)
+
+                    # --- Chart 2: Pie Chart for AI Automation Complexity ---
+                    with tab2:
+                        if "ai_automation_complexity" in df_selected.columns:
+                            fig2 = px.pie(
+                                df_selected,
+                                names="ai_automation_complexity",
+                                title=f"Distribution of AI Automation Complexity for {selected_title}",
+                                hole=0.4
+                            )
+                            st.plotly_chart(fig2, width=True)
+                        else:
+                            st.info("No AI automation complexity data available.")
+
+                    # --- Chart 3: Job Category Distribution ---
+                    with tab3:
+                        if "job_category" in df_selected.columns:
+                            fig3 = px.histogram(
+                                df_selected,
+                                x="job_category",
+                                title=f"Job Category Distribution for {selected_title}",
+                                color="job_category"
+                            )
+                            st.plotly_chart(fig3, width=True)
+                        else:
+                            st.info("No job category data available.")
+
                 else:
                     st.warning("No data found for the selected job title.")
         else:
             st.info("No job titles found in the database.")
     except Exception as e:
-        st.error(f"Error fetching data: {e}")
+        st.error(f"Error fetching or visualizing data: {e}")
 else:
     st.warning("Database not connected — please check your connection settings.")
-
