@@ -44,6 +44,9 @@ MASTER_XLSX = "genai_job_impact_master.xlsx"
 ALL_JOBS_SHEET = "All Jobs"
 SYNTHESIS_SHEET = "Synthesis"
 
+# Batch configuration
+BATCH_SIZE = 500
+
 st.set_page_config(page_title="GenAI Job Impact Analyst", layout="wide")
 st.title("💼 GenAI Job Impact Analyst")
 
@@ -240,7 +243,7 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
             col_map[c] = "AI Automation Complexity"
         elif "upskilling suggestion" in lower or ("upskilling" in lower and "suggestion" in lower):
             col_map[c] = "Upskilling Suggestion"
-        elif "task category" in lower: 
+        elif "task category" in lower:
             col_map[c] = "Task Category"
         elif "job title" in lower or lower == "title":
             col_map[c] = "Job Title"
@@ -266,9 +269,9 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
     insert_stmt = text("""
         INSERT INTO all_jobs
         (job_title, task, time_allocation, ai_impact_score, impact_explanation,
-         task_transformation, tooling_nature, job_category, Automation_Solution, AI_Automation_Complexity, Upskilling_Suggestion, Task_Category, run_id, jd_hash, task_norm)
+         task_transformation, tooling_nature, job_category, Automation_Solution, AI_AutomATION_Complexity, Upskilling_Suggestion, Task_Category, run_id, jd_hash, task_norm)
         VALUES (:job_title, :task, :time_allocation, :ai_impact_score, :impact_explanation,
-                :task_transformation, :tooling_nature, :job_category, :Automation_Solution, :AI_Automation_Complexity,:Upskilling_Suggestion, :Task_Category, :run_id, :jd_hash, :task_norm)
+                :task_transformation, :tooling_nature, :job_category, :Automation_Solution, :AI_AutomATION_Complexity,:Upskilling_Suggestion, :Task_Category, :run_id, :jd_hash, :task_norm)
         ON CONFLICT (job_title, task_norm) DO UPDATE SET
             time_allocation = EXCLUDED.time_allocation,
             ai_impact_score = EXCLUDED.ai_impact_score,
@@ -277,7 +280,7 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
             tooling_nature = EXCLUDED.tooling_nature,
             job_category = EXCLUDED.job_category,
             Automation_Solution = Excluded.Automation_Solution,
-            AI_Automation_Complexity = Excluded.AI_Automation_Complexity,
+            AI_AutomATION_Complexity = Excluded.AI_AutomATION_Complexity,
             Upskilling_Suggestion = Excluded.Upskilling_Suggestion,
             Task_Category = Excluded.Task_Category,
             run_id = EXCLUDED.run_id,
@@ -295,7 +298,7 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
             "tooling_nature": r.get("Tooling nature % generic vs specific"),
             "job_category": r.get("Job Category"),
             "Automation_Solution": r.get("Automation Solution"),
-            "AI_Automation_Complexity": r.get("AI Automation Complexity"),
+            "AI_AutomATION_Complexity": r.get("AI Automation Complexity"),
             "Upskilling_Suggestion": r.get("Upskilling Suggestion"),
             "Task_Category": r.get("Task Category"),
             "run_id": r.get("Run ID"),
@@ -326,6 +329,14 @@ if "new_synthesis" not in st.session_state:
     st.session_state["new_synthesis"] = {}
 if "new_jd_text" not in st.session_state:
     st.session_state["new_jd_text"] = {}
+if "all_job_descriptions" not in st.session_state:
+    st.session_state["all_job_descriptions"] = []
+if "current_batch" not in st.session_state:
+    st.session_state["current_batch"] = 0
+if "total_batches" not in st.session_state:
+    st.session_state["total_batches"] = 0
+if "auto_run_batches" not in st.session_state:
+    st.session_state["auto_run_batches"] = False
 
 # -------------------------
 # Sidebar / upload UI
@@ -337,24 +348,149 @@ st.sidebar.caption(
     "💡 Multiple roles? In .txt, separate with a line containing only `---`. "
     "In .csv, provide one job description per row under a column named 'JobDescription'."
 )
-generate_clicked_sidebar = st.sidebar.button("🚀 Generate Report", type="primary")
 
-col1, col2 = st.columns([1, 1])
-with col1:
-    generate_clicked_main = st.button("🚀 Generate Report", type="primary")
-with col2:
-    powerbi_url = "https://app.powerbi.com/view?r=eyJrIjoiMDFhMGVlOGItOTY5MC00ZTRhLWI5ZTEtNmMwNDQxNTUzNTNmIiwidCI6IjA3NmEzOTkyLTA0ZjgtNDcwMC05ODQ0LTA4YzM3NDc3NzdlZiJ9"
-    st.markdown(
-        f"""
-        <a href="{powerbi_url}" target="_blank">
-            <button style="background-color:#0078D4; color:white; padding:0.6em 1.2em; border:none; border-radius:8px; cursor:pointer;">
-                📊 Open Dashboard
-            </button>
-        </a>
-        """,
-        unsafe_allow_html=True
+# -------------------------
+# Load job descriptions button
+# -------------------------
+if st.sidebar.button("📂 Load Job Descriptions"):
+    job_descriptions = []
+    if uploaded_file is not None:
+        if uploaded_file.name.endswith(".txt"):
+            raw_text = uploaded_file.read().decode("utf-8")
+            job_descriptions = extract_roles_from_text(raw_text)
+        elif uploaded_file.name.endswith(".csv"):
+            try:
+                df_csv = pd.read_csv(uploaded_file)
+            except Exception as e:
+                st.error(f"Could not read CSV: {e}")
+                st.stop()
+            # Case-insensitive column handling for CSV
+            cols_map = {c.lower().strip(): c for c in df_csv.columns}
+            chosen_col = None
+            for candidate in ("jobdescription", "job_description", "job description", "description", "jobdesc", "job_desc"):
+                if candidate in cols_map:
+                    chosen_col = cols_map[candidate]
+                    break
+            if chosen_col:
+                job_descriptions = df_csv[chosen_col].dropna().astype(str).tolist()
+            else:
+                st.error("CSV must contain a column named 'JobDescription' or similar (job_description, description).")
+                st.stop()
+        else:
+            st.error("Unsupported file type. Upload .txt or .csv")
+            st.stop()
+    elif job_text and job_text.strip():
+        job_descriptions = [job_text.strip()]
+    else:
+        st.error("Please upload or paste at least one job description.")
+        st.stop()
+    
+    st.session_state["all_job_descriptions"] = job_descriptions
+    st.session_state["total_batches"] = (len(job_descriptions) + BATCH_SIZE - 1) // BATCH_SIZE
+    st.session_state["current_batch"] = 0
+    st.success(f"✅ Loaded {len(job_descriptions)} job descriptions. Total batches: {st.session_state['total_batches']}")
+
+# -------------------------
+# Batch Processing Controls (with Power BI + Auto-Run)
+# -------------------------
+jobs = st.session_state.get("all_job_descriptions", [])
+if jobs:
+    total_jobs = len(jobs)
+    batch_size_local = BATCH_SIZE
+
+    # Ensure batch counters exist
+    if "current_batch" not in st.session_state:
+        st.session_state["current_batch"] = 0
+
+    total_batches = (total_jobs + batch_size_local - 1) // batch_size_local
+    st.session_state["total_batches"] = total_batches
+
+    st.sidebar.divider()
+    st.sidebar.subheader("📦 Batch Processing")
+
+    st.sidebar.info(f"Total jobs: {total_jobs} | Batch size: {batch_size_local}")
+
+    # -------------------------
+    # Navigation Buttons
+    # -------------------------
+    col_b1, col_b2 = st.sidebar.columns(2)
+
+    with col_b1:
+        st.button(
+            "⬅️ Previous",
+            disabled=st.session_state["current_batch"] <= 0,
+            on_click=lambda: st.session_state.__setitem__(
+                "current_batch",
+                max(0, st.session_state["current_batch"] - 1)
+            )
+        )
+
+    with col_b2:
+        st.button(
+            "Next ➡️",
+            disabled=st.session_state["current_batch"] >= total_batches - 1,
+            on_click=lambda: st.session_state.__setitem__(
+                "current_batch",
+                min(total_batches - 1, st.session_state["current_batch"] + 1)
+            )
+        )
+
+    # -------------------------
+    # Select Batch Dropdown
+    # -------------------------
+    selected = st.sidebar.selectbox(
+        "Jump to batch:",
+        list(range(total_batches)),
+        index=st.session_state["current_batch"],
+        format_func=lambda x: f"Batch {x+1} (Jobs {x*batch_size_local+1}-{min((x+1)*batch_size_local, total_jobs)})",
+        key="batch_selector"
     )
 
+    if selected != st.session_state["current_batch"]:
+        st.session_state["current_batch"] = selected
+        st.rerun()
+
+    st.sidebar.markdown(f"### ▶ Current Batch: **{st.session_state['current_batch'] + 1} / {total_batches}**")
+
+    # -------------------------
+    # Generate Batch Button + Power BI Button (Main Area)
+    # -------------------------
+    col_main1, col_main2 = st.columns([1, 1])
+
+    with col_main1:
+        st.button(
+            "🚀 Generate Report for This Batch",
+            type="primary",
+            on_click=lambda: st.session_state.__setitem__("trigger_process_batch", True)
+        )
+
+    with col_main2:
+        powerbi_url = "https://app.powerbi.com/view?r=eyJrIjoiMDFhMGVlOGItOTY5MC00ZTRhLWI5ZTEtNmMwNDQxNTUzNTNmIiwidCI6IjA3NmEzOTkyLTA0ZjgtNDcwMC05ODQ0LTA4YzM3NDc3NzdlZiJ9"
+        st.markdown(
+            f"""
+            <a href="{powerbi_url}" target="_blank">
+                <button style="background-color:#0078D4; color:white; padding:0.6em 1.2em; border:none; border-radius:8px; cursor:pointer;">
+                    📊 Open Dashboard
+                </button>
+            </a>
+            """,
+            unsafe_allow_html=True
+        )
+
+    # -------------------------
+    # Sidebar version of Generate Report (duplicate)
+    # -------------------------
+    if st.sidebar.button("🚀 Generate Report for This Batch", type="primary"):
+        st.session_state["trigger_process_batch"] = True
+
+    # -------------------------
+    # Auto-Run ALL Batches (Generate all, Commit per-batch)
+    # -------------------------
+    if st.sidebar.button("⚡ Auto-Run All Batches (Generate + Commit per batch)"):
+        st.session_state["auto_run_batches"] = True
+
+else:
+    st.sidebar.info("No job descriptions loaded yet.")
 # -------------------------
 # DB connection check (optional)
 # -------------------------
@@ -373,7 +509,7 @@ else:
     st.info("No DATABASE configured — app will operate in Excel-only mode unless DATABASE is provided.")
 
 # -------------------------
-# SYSTEM PROMPT (exact Club Med prompt — updated to handle job title only)
+# SYSTEM PROMPT
 # -------------------------
 SYSTEM_PROMPT = """You are GenAI-Job-Impact-Analyst, an expert designed to evaluate how generative AI can transform work at Club Med. 
 
@@ -389,7 +525,7 @@ Output: Produce a table – one line per task – with the following six columns
 
 Task – concise verb-phrase copied, paraphrased, or reasonably inferred from the job title or description. 
 Job Category - one of: IT, Marketing, HR, Finance, Operations, Legal, R&D, Customer Service, Other.
-Time allocation % – your best estimate of the share of the job’s total time this task takes (sum ≈ 100%). 
+Time allocation % – your best estimate of the share of the job's total time this task takes (sum ≈ 100%). 
 AI Impact Score – how strongly Gen-AI could affect the task (0 = no impact, 100 = fully automatable/augmented). 
 Impact Explanation – 2–3 sentences justifying the chosen score. Write the Impact Explanation only in French.
 Task Transformation % – proportion of the task likely to change for the employee (e.g., 70% up-skilling vs 30% pure automation). Always express as two percentages that sum to 100 in the format "XX% up-skilling / YY% automation".
@@ -411,204 +547,399 @@ Use Markdown. Keep lines reasonably wrapped (~80 chars). Round percentages to ne
 """
 
 # -------------------------
-# GENERATE: parse uploaded/pasted JDs, call Azure OpenAI, buffer outputs
+# Process single job description
 # -------------------------
-if generate_clicked_sidebar or generate_clicked_main:
-    job_descriptions = []
-    if uploaded_file is not None:
-        if uploaded_file.name.endswith(".txt"):
-            raw_text = uploaded_file.read().decode("utf-8")
-            job_descriptions = extract_roles_from_text(raw_text)
-        elif uploaded_file.name.endswith(".csv"):
-            try:
-                df_csv = pd.read_csv(uploaded_file)
-            except Exception as e:
-                st.error(f"Could not read CSV: {e}")
-                st.stop()
-            if "JobDescription" in df_csv.columns:
-                job_descriptions = df_csv["JobDescription"].dropna().astype(str).tolist()
-            else:
-                st.error("CSV must contain a column named 'JobDescription'")
-                st.stop()
-        else:
-            st.error("Unsupported file type. Upload .txt or .csv")
-            st.stop()
-    elif job_text and job_text.strip():
-        job_descriptions = [job_text.strip()]
+def process_single_job(jd: str, idx: int, global_idx: int):
+    """Process a single job description and return the results"""
+    role_name = role_name_from_jobdesc(jd, global_idx)
+    user_prompt = f"Here is the job description or job title:\n\n{jd}"
+
+    try:
+        resp = client.chat.completions.create(
+            model=AZURE_OPENAI_DEPLOYMENT,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ]
+        )
+        output_text = resp.choices[0].message.content
+    except Exception as e:
+        st.error(f"OpenAI call failed for {role_name}: {e}")
+        output_text = ""
+
+    # Fallback: if the model returned nothing, try an inferred-tasks prompt
+    if not output_text or not output_text.strip():
+        st.warning(f"No detailed output from model for {role_name}. Using inferred tasks fallback.")
+        fallback_prompt = f"Please generate typical tasks for the role '{role_name}' (as used in hospitality/Club Med) and evaluate them following the instructions."
+        try:
+            resp = client.chat.completions.create(
+                model=AZURE_OPENAI_DEPLOYMENT,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": fallback_prompt},
+                ]
+            )
+            output_text = resp.choices[0].message.content
+        except Exception as e:
+            st.error(f"Fallback OpenAI call failed for {role_name}: {e}")
+            output_text = ""
+
+    table_text, synthesis_text = split_table_and_synthesis(output_text)
+    parsed_df = parse_markdown_table(table_text)
+
+    if parsed_df.empty:
+        m = re.search(r"(\|.*\|\s*\n\|[-:\s|]+\|\s*\n(?:\|.*\|\s*\n?)*)", output_text, flags=re.DOTALL)
+        if m:
+            parsed_df = parse_markdown_table(m.group(0))
+        if parsed_df.empty:
+            parsed_df = pd.DataFrame({
+                "Task": [f"[Model output parse failed — see Report]"],
+                "AI Impact Score (0–100)": [None],
+                "Job Category": [None],
+                "Time allocation %": [None],
+                "Impact Explanation": [None],
+                "Task Transformation %": [None],
+                "Tooling nature % generic vs specific": [None],
+                "Automation Solution": [None],
+                "AI Automation Complexity": [None],
+                "Upskilling Suggestion": [None],
+                "Task Category": [None]
+            })
+
+    if "Job Title" not in parsed_df.columns:
+        parsed_df.insert(0, "Job Title", role_name)
     else:
-        st.error("Please upload or paste at least one job description.")
-        st.stop()
+        parsed_df["Job Title"] = parsed_df["Job Title"].replace("", role_name).fillna(role_name)
 
-    with st.spinner("Analyzing job description(s) with Azure OpenAI..."):
-        for idx, jd in enumerate(job_descriptions):
-            role_name = role_name_from_jobdesc(jd, idx)
-            user_prompt = f"Here is the job description or job title:\n\n{jd}"
+    canonical_map = {}
+    for col in parsed_df.columns:
+        lc = col.strip().lower()
+        if lc in ["task", "tasks"]:
+            canonical_map[col] = "Task"
+        elif "job category" in lc:
+            canonical_map[col] = "Job Category"
+        elif "time" in lc and "alloc" in lc:
+            canonical_map[col] = "Time allocation %"
+        elif "ai impact" in lc or "impact score" in lc:
+            canonical_map[col] = "AI Impact Score (0–100)"
+        elif "impact explanation" in lc or ("explanation" in lc and "impact" in lc):
+            canonical_map[col] = "Impact Explanation"
+        elif "task transformation" in lc or "transformation" in lc:
+            canonical_map[col] = "Task Transformation %"
+        elif "tooling" in lc:
+            canonical_map[col] = "Tooling nature % generic vs specific"
+        elif "automation solution" in lc or ("solution" in lc and "automation" in lc):
+            canonical_map[col] = "Automation Solution"
+        elif "ai automation complexity" in lc or ("complexity" in lc and "automation" in lc):
+            canonical_map[col] = "AI Automation Complexity"
+        elif "upskilling suggestion" in lc or ("upskilling" in lc and "suggestion" in lc):
+            canonical_map[col] = "Upskilling Suggestion"
+        elif "task category" in lc or ("category" in lc and "task" in lc):
+            canonical_map[col] = "Task Category"
+        elif lc in ["job title", "title"]:
+            canonical_map[col] = "Job Title"
+    if canonical_map:
+        parsed_df = parsed_df.rename(columns=canonical_map)
 
-            try:
-                resp = client.chat.completions.create(
-                    model=AZURE_OPENAI_DEPLOYMENT,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ]
-                )
-                output_text = resp.choices[0].message.content
-            except Exception as e:
-                st.error(f"OpenAI call failed for {role_name}: {e}")
-                output_text = ""
+    for col in [
+        "Task",
+        "Job Category",
+        "Time allocation %",
+        "AI Impact Score (0–100)",
+        "Impact Explanation",
+        "Task Transformation %",
+        "Tooling nature % generic vs specific",
+        "Automation Solution",
+        "AI Automation Complexity",
+        "Upskilling Suggestion",
+        "Task Category"
+    ]:
+        if col not in parsed_df.columns:
+            parsed_df[col] = None
 
-            # Fallback: if the model returned nothing, try an inferred-tasks prompt
-            if not output_text or not output_text.strip():
-                st.warning(f"No detailed output from model for {role_name}. Using inferred tasks fallback.")
-                fallback_prompt = f"Please generate typical tasks for the role '{role_name}' (as used in hospitality/Club Med) and evaluate them following the instructions."
-                try:
-                    resp = client.chat.completions.create(
-                        model=AZURE_OPENAI_DEPLOYMENT,
-                        messages=[
-                            {"role": "system", "content": SYSTEM_PROMPT},
-                            {"role": "user", "content": fallback_prompt},
-                        ]
-                    )
-                    output_text = resp.choices[0].message.content
-                except Exception as e:
-                    st.error(f"Fallback OpenAI call failed for {role_name}: {e}")
-                    output_text = ""
+    run_id = datetime.now().isoformat(timespec="seconds")
+    jd_hash = hashlib.sha256(jd.strip().encode("utf-8")).hexdigest()[:12]
+    parsed_df["Run ID"] = run_id
+    parsed_df["JD Hash"] = jd_hash
 
-            st.markdown(f"### 📊 Generated Report — **{role_name}**")
-            if output_text:
-                st.markdown(output_text)
-            else:
-                st.markdown("_No output from model._")
+    if "Task" in parsed_df.columns:
+        parsed_df["task_norm"] = parsed_df["Task"].apply(normalize_task)
+        parsed_df = parsed_df.drop_duplicates(subset=["Job Title", "task_norm"], keep="last")
+    else:
+        parsed_df["task_norm"] = ""
 
-            table_text, synthesis_text = split_table_and_synthesis(output_text)
-            parsed_df = parse_markdown_table(table_text)
+    # Normalize Task Transformation % into "XX% up-skilling / YY% automation"
+    def normalize_task_transformation(val):
+        if val is None:
+            return None
+        s = str(val).strip()
+        if "%" in s and ("/" in s or "up" in s.lower()):
+            return s
+        m = re.search(r'(\d{1,3})', s)
+        if m:
+            num = int(m.group(1))
+            if num < 0: num = 0
+            if num > 100: num = 100
+            other = 100 - num
+            return f"{num}% up-skilling / {other}% automation"
+        return None
 
-            if parsed_df.empty:
-                m = re.search(r"(\|.*\|\s*\n\|[-:\s|]+\|\s*\n(?:\|.*\|\s*\n?)*)", output_text, flags=re.DOTALL)
-                if m:
-                    parsed_df = parse_markdown_table(m.group(0))
-                if parsed_df.empty:
-                    parsed_df = pd.DataFrame({
-                        "Task": [f"[Model output parse failed — see Report]"],
-                        "AI Impact Score (0–100)": [None],
-                        "Job Category": [None],
-                        "Time allocation %": [None],
-                        "Impact Explanation": [None],
-                        "Task Transformation %": [None],
-                        "Tooling nature % generic vs specific": [None],
-                        "Automation Solution": [None],
-                        "AI Automation Complexity": [None],
-                        "Upskilling Suggestion": [None],
-                        "Task Category": [None]
-                    })
+    if "Task Transformation %" in parsed_df.columns:
+        parsed_df["Task Transformation %"] = parsed_df["Task Transformation %"].apply(normalize_task_transformation)
 
-            if "Job Title" not in parsed_df.columns:
-                parsed_df.insert(0, "Job Title", role_name)
-            else:
-                parsed_df["Job Title"] = parsed_df["Job Title"].replace("", role_name).fillna(role_name)
+    cols = parsed_df.columns.tolist()
+    if "Job Title" in cols:
+        cols = ["Job Title"] + [c for c in cols if c != "Job Title"]
+        parsed_df = parsed_df[cols]
 
-            canonical_map = {}
-            for col in parsed_df.columns:
-                lc = col.strip().lower()
-                if lc in ["task", "tasks"]:
-                    canonical_map[col] = "Task"
-                elif "job category" in lc:
-                    canonical_map[col] = "Job Category"
-                elif "time" in lc and "alloc" in lc:
-                    canonical_map[col] = "Time allocation %"
-                elif "ai impact" in lc or "impact score" in lc:
-                    canonical_map[col] = "AI Impact Score (0–100)"
-                elif "impact explanation" in lc or ("explanation" in lc and "impact" in lc):
-                    canonical_map[col] = "Impact Explanation"
-                elif "task transformation" in lc or "transformation" in lc:
-                    canonical_map[col] = "Task Transformation %"
-                elif "tooling" in lc:
-                    canonical_map[col] = "Tooling nature % generic vs specific"
-                elif "automation solution" in lc or ("solution" in lc and "automation" in lc):
-                    canonical_map[col] = "Automation Solution"
-                elif "ai automation complexity" in lc or ("complexity" in lc and "automation" in lc):
-                    canonical_map[col] = "AI Automation Complexity"
-                elif "upskilling suggestion" in lc or ("upskilling" in lc and "suggestion" in lc):
-                    canonical_map[col] = "Upskilling Suggestion"
-                elif "task category" in lc or ("category" in lc and "task" in lc):
-                    canonical_map[col] = "Task Category"
-                elif lc in ["job title", "title"]:
-                    canonical_map[col] = "Job Title"
-            if canonical_map:
-                parsed_df = parsed_df.rename(columns=canonical_map)
+    return role_name, parsed_df, synthesis_text, output_text, jd
+# -------------------------
+# GENERATE: batch processing (manual trigger)
+# -------------------------
+if st.session_state.get("trigger_process_batch", False):
+    st.session_state["trigger_process_batch"] = False  # reset the trigger
 
-            for col in [
-                "Task",
-                "Job Category",
-                "Time allocation %",
-                "AI Impact Score (0–100)",
-                "Impact Explanation",
-                "Task Transformation %",
-                "Tooling nature % generic vs specific",
-                "Automation Solution",
-                "AI Automation Complexity",
-                "Upskilling Suggestion",
-                "Task Category"
-            ]:
-                if col not in parsed_df.columns:
-                    parsed_df[col] = None
+    current_batch = st.session_state.get("current_batch", 0)
+    start_idx = current_batch * BATCH_SIZE
+    end_idx = min(start_idx + BATCH_SIZE, len(st.session_state.get("all_job_descriptions", [])))
 
-            run_id = datetime.now().isoformat(timespec="seconds")
-            jd_hash = hashlib.sha256(jd.strip().encode("utf-8")).hexdigest()[:12]
-            parsed_df["Run ID"] = run_id
-            parsed_df["JD Hash"] = jd_hash
+    batch_jobs = st.session_state.get("all_job_descriptions", [])[start_idx:end_idx]
 
-            if "Task" in parsed_df.columns:
-                parsed_df["task_norm"] = parsed_df["Task"].apply(normalize_task)
-                parsed_df = parsed_df.drop_duplicates(subset=["Job Title", "task_norm"], keep="last")
-            else:
-                parsed_df["task_norm"] = ""
+    st.info(f"🔄 Processing Batch {current_batch + 1}/{st.session_state.get('total_batches', 1)} (Jobs {start_idx + 1}-{end_idx})")
 
-            # Normalize Task Transformation % into "XX% up-skilling / YY% automation"
-            def normalize_task_transformation(val):
-                if val is None:
-                    return None
-                s = str(val).strip()
-                if "%" in s and ("/" in s or "up" in s.lower()):
-                    return s
-                m = re.search(r'(\d{1,3})', s)
-                if m:
-                    num = int(m.group(1))
-                    if num < 0: num = 0
-                    if num > 100: num = 100
-                    other = 100 - num
-                    return f"{num}% up-skilling / {other}% automation"
-                return None
+    # Progress bar
+    progress_bar = st.progress(0)
+    status_text = st.empty()
 
-            if "Task Transformation %" in parsed_df.columns:
-                parsed_df["Task Transformation %"] = parsed_df["Task Transformation %"].apply(normalize_task_transformation)
+    with st.spinner(f"Analyzing {len(batch_jobs)} job descriptions with Azure OpenAI..."):
+        for idx, jd in enumerate(batch_jobs):
+            global_idx = start_idx + idx
 
-            cols = parsed_df.columns.tolist()
-            if "Job Title" in cols:
-                cols = ["Job Title"] + [c for c in cols if c != "Job Title"]
-                parsed_df = parsed_df[cols]
+            # Update progress
+            progress = (idx + 1) / len(batch_jobs) if len(batch_jobs) > 0 else 1.0
+            progress_bar.progress(progress)
+            status_text.text(f"Processing job {idx + 1}/{len(batch_jobs)} (Global: {global_idx + 1}/{len(st.session_state.get('all_job_descriptions', []))})")
 
+            # Process the job
+            role_name, parsed_df, synthesis_text, output_text, jd_text = process_single_job(jd, idx, global_idx)
+
+            # Display results
+            with st.expander(f"📊 Generated Report — **{role_name}** (Job {global_idx + 1})"):
+                if output_text:
+                    st.markdown(output_text)
+                else:
+                    st.markdown("_No output from model._")
+
+            # Store in session state
             st.session_state["new_reports"][role_name] = parsed_df.copy()
             st.session_state["new_synthesis"][role_name] = synthesis_text
-            st.session_state["new_jd_text"][role_name] = jd
+            st.session_state["new_jd_text"][role_name] = jd_text
 
+    progress_bar.progress(1.0)
+    status_text.text(f"✅ Completed processing batch {current_batch + 1}")
+    st.success(f"✅ Successfully processed {len(batch_jobs)} job descriptions in this batch!")
+
+# ------------------------------
+# AUTO-RUN ALL BATCHES (Generate each batch, then COMMIT per-batch)
+# ------------------------------
+if st.session_state.get("auto_run_batches", False):
+    # reset trigger right away
+    st.session_state["auto_run_batches"] = False
+
+    all_jobs = st.session_state.get("all_job_descriptions", [])
+    total_jobs = len(all_jobs)
+    total_batches = st.session_state.get("total_batches", (total_jobs + BATCH_SIZE - 1)//BATCH_SIZE)
+    st.info(f"⚡ Auto-run started: {total_jobs} jobs across {total_batches} batches.")
+    overall_progress = st.progress(0.0)
+    overall_status = st.empty()
+
+    failed_batches = []
+    processed_total = 0
+    batch_summaries = []
+
+    for batch_num in range(total_batches):
+        st.session_state["current_batch"] = batch_num
+        start_idx = batch_num * BATCH_SIZE
+        end_idx = min(start_idx + BATCH_SIZE, total_jobs)
+        batch_jobs = all_jobs[start_idx:end_idx]
+
+        overall_status.write(f"🔄 Generating Batch {batch_num + 1}/{total_batches} (Jobs {start_idx + 1}-{end_idx})")
+
+        # per-batch progress
+        inner_progress = st.progress(0.0)
+        job_status = st.empty()
+
+        # store roles generated in this batch so we can commit only them
+        batch_role_names = []
+
+        with st.spinner(f"Generating batch {batch_num+1}..."):
+            try:
+                for i, jd in enumerate(batch_jobs):
+                    global_idx = start_idx + i
+
+                    role_name, parsed_df, synthesis_text, output_text, jd_text = process_single_job(jd, i, global_idx)
+
+                    # Display output (same as manual)
+                    with st.expander(f"📊 Generated Report — **{role_name}** (Global Job {global_idx+1})"):
+                        if output_text:
+                            st.markdown(output_text)
+                        else:
+                            st.warning("No output from model.")
+
+                    # Store in global buffers (so commit logic can find them)
+                    st.session_state["new_reports"][role_name] = parsed_df.copy()
+                    st.session_state["new_synthesis"][role_name] = synthesis_text
+                    st.session_state["new_jd_text"][role_name] = jd_text
+
+                    batch_role_names.append(role_name)
+                    processed_total += 1
+
+                    # progress updates
+                    pct = (i + 1) / len(batch_jobs)
+                    inner_progress.progress(pct)
+                    job_status.text(f"Batch {batch_num+1}/{total_batches} — Job {i+1}/{len(batch_jobs)} processed")
+
+            except Exception as e:
+                failed_batches.append(batch_num + 1)
+                st.error(f"Batch {batch_num+1} failed during generation: {e}")
+
+        # After generation of this batch -> COMMIT this batch to DB (if engine exists), show DB progress
+        batch_summary = {"batch": batch_num + 1, "start": start_idx + 1, "end": end_idx, "rows": 0, "synth": 0, "status": "pending"}
+        try:
+            if engine is None:
+                st.warning("No DB configured — skipping DB commit for this batch (Excel-only mode).")
+                # Still count rows and synthesis items
+                try:
+                    batch_dfs = [st.session_state["new_reports"][rn] for rn in batch_role_names if rn in st.session_state["new_reports"]]
+                    batch_df = pd.concat(batch_dfs, ignore_index=True) if batch_dfs else pd.DataFrame()
+                    batch_summary["rows"] = len(batch_df)
+                    batch_summary["synth"] = len([rn for rn in batch_role_names if rn in st.session_state["new_synthesis"]])
+                    batch_summary["status"] = "excel-only"
+                except Exception:
+                    batch_summary["status"] = "excel-only-failed"
+            else:
+                st.info(f"🗄️ Committing Batch {batch_num+1} to database...")
+                batch_db_progress = st.progress(0.0)
+                batch_db_status = st.empty()
+
+                # Build DF for this batch only
+                batch_db_status.text("Preparing batch data...")
+                batch_db_progress.progress(0.05)
+
+                batch_dfs = [st.session_state["new_reports"][rn] for rn in batch_role_names if rn in st.session_state["new_reports"]]
+                batch_df = pd.concat(batch_dfs, ignore_index=True) if batch_dfs else pd.DataFrame()
+
+                batch_summary["rows"] = len(batch_df)
+
+                # Clean Task Transformation %
+                if "Task Transformation %" in batch_df.columns:
+                    def fix_tf(v):
+                        if isinstance(v, str) and "%" in v:
+                            return v
+                        try:
+                            m = re.search(r"(\d+)", str(v))
+                            n = int(m.group(1)) if m else 50
+                        except:
+                            n = 50
+                        n = max(0, min(100, n))
+                        return f"{n}% up-skilling / {100-n}% automation"
+
+                    batch_df["Task Transformation %"] = batch_df["Task Transformation %"].apply(fix_tf)
+
+                # Phase 1 — upsert tasks
+                batch_db_status.text("Inserting tasks into database...")
+                batch_db_progress.progress(0.35)
+
+                upsert_all_jobs_sql(engine, batch_df)
+                batch_db_progress.progress(0.7)
+                batch_db_status.text("Tasks inserted successfully.")
+
+                # Phase 2 — append synth
+                syn_rows = []
+                for rn in batch_role_names:
+                    if rn in st.session_state["new_synthesis"]:
+                        syn_text = st.session_state["new_synthesis"][rn]
+                        jd_text = st.session_state["new_jd_text"].get(rn, "")
+                        syn_rows.append({
+                            "job_title": rn,
+                            "synthesis": syn_text,
+                            "run_id": datetime.now().isoformat(timespec="seconds"),
+                            "jd_hash": hashlib.sha256(jd_text.strip().encode("utf-8")).hexdigest()[:12]
+                        })
+
+                batch_summary["synth"] = len(syn_rows)
+                batch_db_status.text("Inserting synthesis rows...")
+                batch_db_progress.progress(0.9)
+
+                if syn_rows:
+                    append_synthesis_sql(engine, syn_rows)
+
+                batch_db_status.text("Batch commit finalizing...")
+                batch_db_progress.progress(1.0)
+                batch_db_status.text("Batch commit complete.")
+                batch_summary["status"] = "committed"
+                st.success(f"✅ Batch {batch_num+1} committed to database ({batch_summary['rows']} rows, {batch_summary['synth']} synth).")
+
+        except Exception as e:
+            batch_summary["status"] = f"failed: {e}"
+            st.error(f"❌ DB commit failed for batch {batch_num+1}: {e}")
+            failed_batches.append(batch_num + 1)
+
+        # Clear only the items that belong to this batch from session_state buffers
+        for rn in batch_role_names:
+            if rn in st.session_state["new_reports"]:
+                del st.session_state["new_reports"][rn]
+            if rn in st.session_state["new_synthesis"]:
+                del st.session_state["new_synthesis"][rn]
+            if rn in st.session_state["new_jd_text"]:
+                del st.session_state["new_jd_text"][rn]
+
+        batch_summaries.append(batch_summary)
+
+        # update overall progress
+        overall_progress.progress((batch_num + 1) / total_batches)
+
+    # End for all batches
+    # Summary of auto-run
+    st.info("📝 Auto-run summary")
+    summary_df = pd.DataFrame(batch_summaries)
+    st.dataframe(summary_df)
+
+    if failed_batches:
+        st.warning(f"Some batches failed: {failed_batches}")
+    else:
+        st.success("🎉 All batches generated and committed successfully.")
+
+    st.balloons()
 # -------------------------
 # Preview buffered items
 # -------------------------
+
 st.divider()
 st.subheader("📝 Pending Updates (Buffered; choose how to commit)")
 
 if st.session_state["new_reports"]:
-    for role, df in st.session_state["new_reports"].items():
-        st.markdown(f"#### {role}")
-        try:
-            st.dataframe(df, width=True)
-        except Exception:
-            st.write(df.head(20))
-        syn = st.session_state["new_synthesis"].get(role, "")
-        if syn:
-            st.markdown("**Synthesis (preview):**")
-            st.markdown(syn if len(syn) < 1000 else syn[:1000] + "...")
+    st.info(f"📦 Total buffered reports: {len(st.session_state['new_reports'])}")
+    
+    # Show summary
+    with st.expander("View Summary of Buffered Jobs", expanded=False):
+        buffered_jobs = list(st.session_state["new_reports"].keys())
+        for i, job in enumerate(buffered_jobs, 1):
+            st.write(f"{i}. {job}")
+    
+    # Show detailed view (limit to last 5 for performance)
+    st.markdown("#### Last 5 Processed Jobs (Detailed View)")
+    recent_jobs = list(st.session_state["new_reports"].items())[-5:]
+    for role, df in recent_jobs:
+        with st.expander(f"📊 {role}"):
+            try:
+                st.dataframe(df, use_container_width=True)
+            except Exception:
+                st.write(df.head(20))
+            syn = st.session_state["new_synthesis"].get(role, "")
+            if syn:
+                st.markdown("**Synthesis (preview):**")
+                st.markdown(syn if len(syn) < 1000 else syn[:1000] + "...")
 else:
     st.info("No buffered results. Use 'Generate Report' to parse JDs.")
 
@@ -616,13 +947,13 @@ else:
 # Two separate commit buttons
 # -------------------------
 st.divider()
-st.subheader("Commit options")
+st.subheader("💾 Commit Options")
 
 col_a, col_b = st.columns(2)
 
 with col_a:
     excel_disabled = not bool(st.session_state["new_reports"])
-    if st.button("Update Master Excel (Excel only)", disabled=excel_disabled):
+    if st.button("📊 Update Master Excel (Excel only)", disabled=excel_disabled):
         existing_tasks, existing_syn = load_master_excel()
         try:
             new_tasks = pd.concat(st.session_state["new_reports"].values(), ignore_index=True, sort=False)
@@ -700,7 +1031,7 @@ with col_a:
 
         try:
             buf = write_master_excel(all_tasks, all_syn)
-            st.success(f"Master Excel updated: {MASTER_XLSX} (database not modified).")
+            st.success(f"✅ Master Excel updated: {MASTER_XLSX} (database not modified). Total jobs in Excel: {len(all_tasks)}")
             st.download_button(
                 label="📥 Download Current Master Excel",
                 data=buf,
@@ -713,10 +1044,11 @@ with col_a:
         st.session_state["new_reports"].clear()
         st.session_state["new_synthesis"].clear()
         st.session_state["new_jd_text"].clear()
+        st.rerun()
 
 with col_b:
     db_disabled = (not bool(st.session_state["new_reports"])) or (engine is None)
-    if st.button("Update Database (Postgres only)", disabled=db_disabled):
+    if st.button("🗄️ Update Database (Postgres only)", disabled=db_disabled):
         if engine is None:
             st.error("No DB engine available. Configure DATABASE to enable DB updates.")
         else:
@@ -749,8 +1081,17 @@ with col_b:
                 new_tasks["Task Transformation %"] = None
 
             try:
+                # Show DB progress UI while committing manual DB update
+                db_progress = st.progress(0.0)
+                db_status = st.empty()
+
+                db_status.text("Preparing data...")
+                db_progress.progress(0.05)
+
                 upsert_all_jobs_sql(engine, new_tasks)
-                # prepare synthesis rows for DB
+                db_progress.progress(0.6)
+                db_status.text("Tasks upserted... preparing syntheses")
+
                 syn_rows_for_db = []
                 for role, syn in st.session_state["new_synthesis"].items():
                     jd_text = st.session_state["new_jd_text"].get(role, "")
@@ -760,9 +1101,17 @@ with col_b:
                         "run_id": datetime.now().isoformat(timespec="seconds"),
                         "jd_hash": hashlib.sha256(jd_text.strip().encode("utf-8")).hexdigest()[:12]
                     })
+
+                db_status.text("Inserting synthesis rows...")
+                db_progress.progress(0.9)
+
                 if syn_rows_for_db:
                     append_synthesis_sql(engine, syn_rows_for_db)
-                st.success("✅ Database updated with buffered rows (Excel not modified).")
+
+                db_progress.progress(1.0)
+                db_status.text("Done")
+                st.success(f"✅ Database updated with {len(new_tasks)} rows (Excel not modified).")
+
             except Exception as e:
                 st.error(f"Failed to update Database: {e}")
 
@@ -770,6 +1119,7 @@ with col_b:
             st.session_state["new_reports"].clear()
             st.session_state["new_synthesis"].clear()
             st.session_state["new_jd_text"].clear()
+            st.rerun()
 
 # -------------------------
 # Dropdown Filter + Plotly Graph
@@ -822,7 +1172,7 @@ if engine is not None:
                             color_continuous_scale="Blues"
                         )
                         fig1.update_layout(xaxis_tickangle=-45)
-                        st.plotly_chart(fig1, width=True)
+                        st.plotly_chart(fig1, use_container_width=True)
 
                     # --- Chart 2: Pie Chart for AI Automation Complexity ---
                     with tab2:
@@ -833,7 +1183,7 @@ if engine is not None:
                                 title=f"Distribution of AI Automation Complexity for {selected_title}",
                                 hole=0.4
                             )
-                            st.plotly_chart(fig2, width=True)
+                            st.plotly_chart(fig2, use_container_width=True)
                         else:
                             st.info("No AI automation complexity data available.")
 
@@ -846,7 +1196,7 @@ if engine is not None:
                                 title=f"Job Category Distribution for {selected_title}",
                                 color="job_category"
                             )
-                            st.plotly_chart(fig3, width=True)
+                            st.plotly_chart(fig3, use_container_width=True)
                         else:
                             st.info("No job category data available.")
 
